@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFront serving an S3 bucket using OAC 
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+  
+      
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement: 
+          - Action: 
+              - 's3:GetOBject'
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+            Principal:
+              Service: 'cloudfront.amazonaws.com'
+            Condition: 
+              StringEquals: 
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+          DefaultTTL: 86400 # default - 1 day
+          MaxTTL: 31536000 # default - 1 year
+          MinTTL: 1
+          Name: !Sub 'CachePol-${AWS::StackName}'
+          ParametersInCacheKeyAndForwardedToOrigin:
+                  CookiesConfig:
+                    CookieBehavior: none
+                  EnableAcceptEncodingGzip: true
+                  HeadersConfig:
+                    HeaderBehavior: none
+                  QueryStringsConfig:
+                    QueryStringBehavior: none
+          
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+          DefaultCacheBehavior:
+                  TargetOriginId: !Ref S3Bucket
+                  ViewerProtocolPolicy: redirect-to-https
+                  CachePolicyId: !GetAtt CachePolicy.Id
+                  FunctionAssociations:
+                    - EventType: viewer-request
+                      FunctionARN: !GetAtt CloudFrontFunction.FunctionMetadata.FunctionARN
+          Enabled: true
+          DefaultRootObject: index.html
+          Origins:
+            - DomainName: !Sub '${S3Bucket}.s3.${AWS::Region}.amazonaws.com'
+              Id: !Ref S3Bucket
+              OriginAccessControlId: !GetAtt OriginAccessControl.Id
+              S3OriginConfig: {}
+  
+  
+  CloudFrontFunction:
+    Type: AWS::CloudFront::Function
+    Properties: 
+      AutoPublish: true
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+
+          // Check whether the URI is missing a file name.
+          if (uri.endsWith("/")) {
+            request.uri += "index.html";
+          } 
+          // Check whether the URI is missing a file extension.
+          else if (!uri.includes(".")) {
+            request.uri += "/index.html";
+          }
+
+          return request;
+        }
+      FunctionConfig: 
+        Comment: 'Function for multipage compatibility with S3 Objects and Solid'
+        Runtime: cloudfront-js-1.0
+      Name: !Sub 'CF-SolidMultiPages-${AWS::StackName}'
+
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+          Name: !Sub 'OAC-${AWS::StackName}'
+          OriginAccessControlOriginType: s3
+          SigningBehavior: always
+          SigningProtocol: sigv4
+
+Outputs:
+  CloudFrontDomain: 
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  CloudFrontDistributionID: 
+    Value: !Ref CloudFrontDistribution
+  S3Bucket:
+    Value: !Ref S3Bucket
